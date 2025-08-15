@@ -1,396 +1,468 @@
-#!/usr/bin/env python3
-"""
-CRSET Solutions - Admin Routes
-Protected admin endpoints for dashboard management
-"""
-
-import os
-import json
+from flask import Blueprint, request, jsonify, session
+from werkzeug.security import check_password_hash, generate_password_hash
 from datetime import datetime, timedelta
-from flask import Blueprint, request, jsonify
-from .auth import require_auth
-import logging
+from src.models.demo_data import demo_manager
+from src.services.email_automation import email_service
+from src.services.advanced_automation import process_lead_with_automation, send_daily_report, send_weekly_insights
+import hashlib
 
-# Configure logging
-logger = logging.getLogger(__name__)
-
-# Create blueprint
 admin_bp = Blueprint('admin', __name__)
 
-# Mock data for demonstration (in production, use database)
-mock_leads = [
-    {
-        'id': 1,
-        'name': 'João Silva',
-        'email': 'joao.silva@empresa.pt',
-        'company': 'TechStart Lda',
-        'message': 'Interessado em automação de processos',
-        'phone': '+351 912 345 678',
-        'score': 85,
-        'classification': 'HOT',
-        'source': 'contact_form',
-        'created_at': '2025-08-10T10:30:00Z',
-        'updated_at': '2025-08-10T10:30:00Z',
-        'status': 'new'
-    },
-    {
-        'id': 2,
-        'name': 'Maria Santos',
-        'email': 'maria.santos@startup.pt',
-        'company': 'InnovaTech',
-        'message': 'Preciso de website profissional',
-        'phone': '+351 913 456 789',
-        'score': 65,
-        'classification': 'WARM',
-        'source': 'chat_widget',
-        'created_at': '2025-08-11T14:15:00Z',
-        'updated_at': '2025-08-11T14:15:00Z',
-        'status': 'contacted'
-    },
-    {
-        'id': 3,
-        'name': 'Pedro Costa',
-        'email': 'pedro.costa@consultoria.pt',
-        'company': 'Costa Consulting',
-        'message': 'Orçamento para marketing digital',
-        'phone': '+351 914 567 890',
-        'score': 45,
-        'classification': 'COLD',
-        'source': 'linkedin',
-        'created_at': '2025-08-12T09:20:00Z',
-        'updated_at': '2025-08-12T09:20:00Z',
-        'status': 'qualified'
-    }
-]
+# Credencial Resend fornecida pelo usuário
+RESEND_API_KEY = "re_PSYPFhdM_NsMdNKWXJpFyNU3Lh5wv1nuG"
 
-mock_services = [
-    {
-        'id': 1,
-        'name': 'Website Essencial',
-        'description': 'Website profissional com design moderno',
-        'price': 397,
-        'category': 'setup',
-        'features': ['Design responsivo', 'SEO básico', 'SSL incluído'],
-        'active': True,
-        'created_at': '2025-08-01T00:00:00Z'
-    },
-    {
-        'id': 2,
-        'name': 'Automação Starter',
-        'description': 'Automação básica de processos',
-        'price': 29,
-        'category': 'saas',
-        'features': ['Workflows básicos', 'Integrações simples', 'Suporte email'],
-        'active': True,
-        'created_at': '2025-08-01T00:00:00Z'
-    }
-]
+# Função para verificar se o usuário está autenticado
+def require_auth():
+    if 'admin_id' not in session:
+        return jsonify({'error': 'Não autorizado'}), 401
+    return None
 
-@admin_bp.route('/admin/dashboard', methods=['GET'])
-@require_auth
-def dashboard():
-    """Admin dashboard statistics"""
-    try:
-        # Calculate statistics
-        total_leads = len(mock_leads)
-        hot_leads = len([l for l in mock_leads if l['classification'] == 'HOT'])
-        warm_leads = len([l for l in mock_leads if l['classification'] == 'WARM'])
-        cold_leads = len([l for l in mock_leads if l['classification'] == 'COLD'])
+# Rota de login
+@admin_bp.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    email = data.get('email')
+    password = data.get('password')
+    
+    if not email or not password:
+        return jsonify({'error': 'Email e password são obrigatórios'}), 400
+    
+    # Verificar credenciais específicas do João Fonseca
+    if email == 'jcsf2020@gmail.com' and password in ['-Portugal2025', '-Crsetsolutions2025', '-Financeflow2025']:
+        # Verificar se admin existe
+        admin_result = demo_manager.get_admin_by_email(email)
         
-        # Recent leads (last 7 days)
-        seven_days_ago = datetime.now() - timedelta(days=7)
-        recent_leads = [
-            l for l in mock_leads 
-            if datetime.fromisoformat(l['created_at'].replace('Z', '+00:00')) > seven_days_ago
-        ]
-        
-        # Revenue calculation (mock)
-        total_revenue = sum([s['price'] for s in mock_services if s['active']]) * 10  # Mock multiplier
-        
-        stats = {
-            'leads': {
-                'total': total_leads,
-                'hot': hot_leads,
-                'warm': warm_leads,
-                'cold': cold_leads,
-                'recent': len(recent_leads)
-            },
-            'services': {
-                'total': len(mock_services),
-                'active': len([s for s in mock_services if s['active']])
-            },
-            'revenue': {
-                'total': total_revenue,
-                'monthly': total_revenue / 12  # Mock monthly
+        if admin_result['success'] and admin_result['admin']:
+            admin = admin_result['admin']
+        else:
+            # Criar admin se não existir
+            admin_data = {
+                'email': email,
+                'password_hash': generate_password_hash(password),
+                'name': 'João Fonseca',
+                'role': 'super_admin'
             }
-        }
+            create_result = demo_manager.create_admin(admin_data)
+            if create_result['success']:
+                admin = create_result['data']
+            else:
+                return jsonify({'error': 'Erro ao criar administrador'}), 500
         
-        logger.info(f"Dashboard accessed by: {request.current_user['email']}")
+        # Atualizar último login
+        demo_manager.update_admin_login(admin['id'])
+        
+        session['admin_id'] = admin['id']
+        session['admin_email'] = admin['email']
+        session['admin_name'] = admin['name']
         
         return jsonify({
             'success': True,
-            'data': stats
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Dashboard error: {str(e)}")
-        return jsonify({
-            'success': False,
-            'message': 'Internal server error'
-        }), 500
+            'admin': admin,
+            'message': 'Login realizado com sucesso'
+        })
+    
+    return jsonify({'error': 'Credenciais inválidas'}), 401
 
-@admin_bp.route('/admin/leads', methods=['GET'])
-@require_auth
+# Rota de logout
+@admin_bp.route('/logout', methods=['POST'])
+def logout():
+    session.clear()
+    return jsonify({'success': True, 'message': 'Logout realizado com sucesso'})
+
+# Verificar se está autenticado
+@admin_bp.route('/me', methods=['GET'])
+def me():
+    auth_error = require_auth()
+    if auth_error:
+        return auth_error
+    
+    admin_result = demo_manager.get_admin_by_email(session['admin_email'])
+    if not admin_result['success'] or not admin_result['admin']:
+        return jsonify({'error': 'Admin não encontrado'}), 404
+    
+    return jsonify({'admin': admin_result['admin']})
+
+# Listar leads
+@admin_bp.route('/leads', methods=['GET'])
 def get_leads():
-    """Get all leads with optional filtering"""
-    try:
-        # Get query parameters
-        classification = request.args.get('classification')
-        status = request.args.get('status')
-        limit = request.args.get('limit', type=int)
-        offset = request.args.get('offset', 0, type=int)
-        
-        # Filter leads
-        filtered_leads = mock_leads.copy()
-        
-        if classification:
-            filtered_leads = [l for l in filtered_leads if l['classification'] == classification.upper()]
-        
-        if status:
-            filtered_leads = [l for l in filtered_leads if l['status'] == status.lower()]
-        
-        # Sort by created_at (newest first)
-        filtered_leads.sort(key=lambda x: x['created_at'], reverse=True)
-        
-        # Apply pagination
-        total = len(filtered_leads)
-        if limit:
-            filtered_leads = filtered_leads[offset:offset + limit]
-        
-        return jsonify({
-            'success': True,
-            'data': {
-                'leads': filtered_leads,
-                'total': total,
-                'offset': offset,
-                'limit': limit
-            }
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Get leads error: {str(e)}")
-        return jsonify({
-            'success': False,
-            'message': 'Internal server error'
-        }), 500
+    auth_error = require_auth()
+    if auth_error:
+        return auth_error
+    
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    
+    filters = {}
+    if request.args.get('status'):
+        filters['status'] = request.args.get('status')
+    if request.args.get('priority'):
+        filters['priority'] = request.args.get('priority')
+    if request.args.get('search'):
+        filters['search'] = request.args.get('search')
+    
+    result = demo_manager.get_leads(page=page, per_page=per_page, filters=filters)
+    
+    if result['success']:
+        return jsonify(result)
+    else:
+        return jsonify({'error': result['error']}), 500
 
-@admin_bp.route('/admin/leads/<int:lead_id>', methods=['GET'])
-@require_auth
-def get_lead(lead_id):
-    """Get specific lead by ID"""
+# Criar lead (para receber do formulário do site)
+@admin_bp.route('/leads', methods=['POST'])
+def create_lead():
+    data = request.get_json()
+    
+    required_fields = ['name', 'email', 'message']
+    for field in required_fields:
+        if not data.get(field):
+            return jsonify({'error': f'{field} é obrigatório'}), 400
+    
+    lead_data = {
+        'name': data['name'],
+        'email': data['email'],
+        'message': data['message'],
+        'company': data.get('company'),
+        'phone': data.get('phone'),
+        'source': data.get('source', 'Site Principal'),
+        'created_at': datetime.now().isoformat()
+    }
+    
+    # 🚀 PROCESSAR COM AUTOMAÇÃO AVANÇADA
     try:
-        lead = next((l for l in mock_leads if l['id'] == lead_id), None)
-        
-        if not lead:
-            return jsonify({
-                'success': False,
-                'message': 'Lead not found'
-            }), 404
-        
-        return jsonify({
-            'success': True,
-            'data': lead
-        }), 200
-        
+        # Calcular score, prioridade e criar sequência de nurturing
+        processed_lead = process_lead_with_automation(lead_data)
+        print(f"🤖 Lead processado com automação: Score {processed_lead.get('score')}, Prioridade {processed_lead.get('priority')}")
     except Exception as e:
-        logger.error(f"Get lead error: {str(e)}")
-        return jsonify({
-            'success': False,
-            'message': 'Internal server error'
-        }), 500
-
-@admin_bp.route('/admin/leads/<int:lead_id>', methods=['PUT'])
-@require_auth
-def update_lead(lead_id):
-    """Update lead information"""
-    try:
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({
-                'success': False,
-                'message': 'No data provided'
-            }), 400
-        
-        # Find lead
-        lead_index = next((i for i, l in enumerate(mock_leads) if l['id'] == lead_id), None)
-        
-        if lead_index is None:
-            return jsonify({
-                'success': False,
-                'message': 'Lead not found'
-            }), 404
-        
-        # Update allowed fields
-        allowed_fields = ['status', 'classification', 'notes']
-        for field in allowed_fields:
-            if field in data:
-                mock_leads[lead_index][field] = data[field]
-        
-        # Update timestamp
-        mock_leads[lead_index]['updated_at'] = datetime.now().isoformat() + 'Z'
-        
-        logger.info(f"Lead {lead_id} updated by: {request.current_user['email']}")
+        print(f"❌ Erro na automação avançada: {e}")
+        processed_lead = lead_data
+    
+    result = demo_manager.create_lead(processed_lead)
+    
+    if result['success']:
+        # 🚀 AUTOMAÇÃO DE EMAIL ATIVADA
+        try:
+            # 1. Enviar notificação para o administrador
+            notification_result = email_service.send_lead_notification(result['data'])
+            print(f"📧 Notificação admin: {notification_result}")
+            
+            # 2. Enviar confirmação automática para o cliente
+            confirmation_result = email_service.send_lead_confirmation(result['data'])
+            print(f"✅ Confirmação cliente: {confirmation_result}")
+            
+        except Exception as e:
+            print(f"❌ Erro na automação de email: {e}")
         
         return jsonify({
             'success': True,
-            'data': mock_leads[lead_index]
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Update lead error: {str(e)}")
-        return jsonify({
-            'success': False,
-            'message': 'Internal server error'
-        }), 500
-
-@admin_bp.route('/admin/services', methods=['GET'])
-@require_auth
-def get_services():
-    """Get all services"""
-    try:
-        return jsonify({
-            'success': True,
-            'data': mock_services
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Get services error: {str(e)}")
-        return jsonify({
-            'success': False,
-            'message': 'Internal server error'
-        }), 500
-
-@admin_bp.route('/admin/services', methods=['POST'])
-@require_auth
-def create_service():
-    """Create new service"""
-    try:
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({
-                'success': False,
-                'message': 'No data provided'
-            }), 400
-        
-        # Validate required fields
-        required_fields = ['name', 'description', 'price', 'category']
-        for field in required_fields:
-            if not data.get(field):
-                return jsonify({
-                    'success': False,
-                    'message': f'Field {field} is required'
-                }), 400
-        
-        # Create new service
-        new_service = {
-            'id': max([s['id'] for s in mock_services]) + 1 if mock_services else 1,
-            'name': data['name'],
-            'description': data['description'],
-            'price': data['price'],
-            'category': data['category'],
-            'features': data.get('features', []),
-            'active': data.get('active', True),
-            'created_at': datetime.now().isoformat() + 'Z'
-        }
-        
-        mock_services.append(new_service)
-        
-        logger.info(f"Service created by: {request.current_user['email']}")
-        
-        return jsonify({
-            'success': True,
-            'data': new_service
+            'lead': result['data'],
+            'score': processed_lead.get('score', 0),
+            'priority': processed_lead.get('priority', 'media'),
+            'message': 'Lead criado com sucesso, automação ativada e emails enviados'
         }), 201
+    else:
+        return jsonify({'error': result['error']}), 500
+
+# Atualizar lead
+@admin_bp.route('/leads/<int:lead_id>', methods=['PUT'])
+def update_lead(lead_id):
+    auth_error = require_auth()
+    if auth_error:
+        return auth_error
+    
+    data = request.get_json()
+    
+    # Campos que podem ser atualizados
+    update_data = {}
+    updatable_fields = ['status', 'priority', 'assigned_to', 'notes', 'company', 'phone']
+    
+    for field in updatable_fields:
+        if field in data:
+            update_data[field] = data[field]
+    
+    # Se o status mudou para "contactado", atualizar contacted_at
+    if data.get('status') == 'contactado':
+        update_data['contacted_at'] = datetime.utcnow().isoformat()
+    
+    result = demo_manager.update_lead(lead_id, update_data)
+    
+    if result['success']:
+        return jsonify({
+            'success': True,
+            'lead': result['data'],
+            'message': 'Lead atualizado com sucesso'
+        })
+    else:
+        return jsonify({'error': result['error']}), 500
+
+# Eliminar lead
+@admin_bp.route('/leads/<int:lead_id>', methods=['DELETE'])
+def delete_lead(lead_id):
+    auth_error = require_auth()
+    if auth_error:
+        return auth_error
+    
+    result = demo_manager.delete_lead(lead_id)
+    
+    if result['success']:
+        return jsonify({
+            'success': True,
+            'message': 'Lead eliminado com sucesso'
+        })
+    else:
+        return jsonify({'error': result['error']}), 500
+
+# Estatísticas do dashboard
+@admin_bp.route('/stats', methods=['GET'])
+def get_stats():
+    auth_error = require_auth()
+    if auth_error:
+        return auth_error
+    
+    result = demo_manager.get_stats()
+    
+    if result['success']:
+        # Remover o campo 'success' antes de retornar
+        stats = {k: v for k, v in result.items() if k != 'success'}
+        return jsonify(stats)
+    else:
+        return jsonify({'error': result['error']}), 500
+
+# Leads urgentes (não contactados há mais de 2 horas)
+@admin_bp.route('/leads/urgent', methods=['GET'])
+def get_urgent_leads():
+    auth_error = require_auth()
+    if auth_error:
+        return auth_error
+    
+    result = demo_manager.get_urgent_leads()
+    
+    if result['success']:
+        return jsonify({
+            'urgent_leads': result['urgent_leads'],
+            'count': result['count']
+        })
+    else:
+        return jsonify({'error': result['error']}), 500
+
+# Enviar alerta de leads urgentes
+@admin_bp.route('/alerts/urgent', methods=['POST'])
+def send_urgent_alert():
+    auth_error = require_auth()
+    if auth_error:
+        return auth_error
+    
+    try:
+        # Obter leads urgentes
+        urgent_result = demo_manager.get_urgent_leads()
         
+        if urgent_result['success'] and urgent_result['urgent_leads']:
+            # Enviar alerta por email
+            alert_result = email_service.send_urgent_alert(urgent_result['urgent_leads'])
+            
+            return jsonify({
+                'success': True,
+                'message': f'Alerta enviado para {len(urgent_result["urgent_leads"])} lead(s) urgente(s)',
+                'email_result': alert_result
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'message': 'Nenhum lead urgente encontrado'
+            })
+            
     except Exception as e:
-        logger.error(f"Create service error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+# Enviar relatório diário
+@admin_bp.route('/reports/daily', methods=['POST'])
+def send_daily_report():
+    auth_error = require_auth()
+    if auth_error:
+        return auth_error
+    
+    try:
+        # Obter estatísticas
+        stats_result = demo_manager.get_stats()
+        
+        # Obter leads recentes
+        leads_result = demo_manager.get_leads(page=1, per_page=10)
+        
+        if stats_result['success'] and leads_result['success']:
+            # Enviar relatório por email
+            report_result = email_service.send_daily_report(
+                {k: v for k, v in stats_result.items() if k != 'success'},
+                leads_result['leads']
+            )
+            
+            return jsonify({
+                'success': True,
+                'message': 'Relatório diário enviado com sucesso',
+                'email_result': report_result
+            })
+        else:
+            return jsonify({'error': 'Erro ao obter dados para o relatório'}), 500
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+def send_lead_notification(lead_data):
+    """Enviar notificação de novo lead por email"""
+    try:
+        # Aqui podemos implementar notificação usando Resend API
+        # Por agora, apenas log
+        print(f"📧 NOVO LEAD: {lead_data['name']} ({lead_data['email']})")
+        print(f"📱 Empresa: {lead_data.get('company', 'N/A')}")
+        print(f"💬 Mensagem: {lead_data['message'][:100]}...")
+        
+        # TODO: Implementar envio real de email usando RESEND_API_KEY
+        # import requests
+        # 
+        # email_data = {
+        #     "from": "noreply@crsetsolutions.com",
+        #     "to": ["jcsf2020@gmail.com"],
+        #     "subject": f"Novo Lead: {lead_data['name']}",
+        #     "html": f"""
+        #     <h2>Novo Lead Recebido</h2>
+        #     <p><strong>Nome:</strong> {lead_data['name']}</p>
+        #     <p><strong>Email:</strong> {lead_data['email']}</p>
+        #     <p><strong>Empresa:</strong> {lead_data.get('company', 'N/A')}</p>
+        #     <p><strong>Mensagem:</strong> {lead_data['message']}</p>
+        #     """
+        # }
+        # 
+        # response = requests.post(
+        #     "https://api.resend.com/emails",
+        #     headers={
+        #         "Authorization": f"Bearer {RESEND_API_KEY}",
+        #         "Content-Type": "application/json"
+        #     },
+        #     json=email_data
+        # )
+        
+        return True
+    except Exception as e:
+        print(f"Erro ao enviar notificação: {e}")
+        return False
+
+
+
+# 📊 ROTAS DE AUTOMAÇÃO E RELATÓRIOS
+
+@admin_bp.route('/automation/daily-report', methods=['POST'])
+def trigger_daily_report():
+    """Enviar relatório diário manualmente"""
+    auth_error = require_auth()
+    if auth_error:
+        return auth_error
+    
+    try:
+        send_daily_report()
+        return jsonify({
+            'success': True,
+            'message': 'Relatório diário enviado com sucesso'
+        })
+    except Exception as e:
         return jsonify({
             'success': False,
-            'message': 'Internal server error'
+            'error': f'Erro ao enviar relatório: {str(e)}'
         }), 500
 
-@admin_bp.route('/admin/services/<int:service_id>', methods=['PUT'])
-@require_auth
-def update_service(service_id):
-    """Update service information"""
+@admin_bp.route('/automation/weekly-insights', methods=['POST'])
+def trigger_weekly_insights():
+    """Enviar insights semanais manualmente"""
+    auth_error = require_auth()
+    if auth_error:
+        return auth_error
+    
     try:
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({
-                'success': False,
-                'message': 'No data provided'
-            }), 400
-        
-        # Find service
-        service_index = next((i for i, s in enumerate(mock_services) if s['id'] == service_id), None)
-        
-        if service_index is None:
-            return jsonify({
-                'success': False,
-                'message': 'Service not found'
-            }), 404
-        
-        # Update allowed fields
-        allowed_fields = ['name', 'description', 'price', 'category', 'features', 'active']
-        for field in allowed_fields:
-            if field in data:
-                mock_services[service_index][field] = data[field]
-        
-        logger.info(f"Service {service_id} updated by: {request.current_user['email']}")
+        send_weekly_insights()
+        return jsonify({
+            'success': True,
+            'message': 'Insights semanais enviados com sucesso'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Erro ao enviar insights: {str(e)}'
+        }), 500
+
+@admin_bp.route('/automation/test-lead-scoring', methods=['POST'])
+def test_lead_scoring():
+    """Testar sistema de lead scoring"""
+    auth_error = require_auth()
+    if auth_error:
+        return auth_error
+    
+    data = request.get_json()
+    
+    # Lead de teste
+    test_lead = {
+        'name': data.get('name', 'João Teste'),
+        'email': data.get('email', 'joao.teste@empresa.pt'),
+        'company': data.get('company', 'TechCorp'),
+        'message': data.get('message', 'Preciso urgentemente de uma demo da vossa solução de automação. Temos orçamento aprovado.'),
+        'source': data.get('source', 'hero_form'),
+        'created_at': datetime.now().isoformat()
+    }
+    
+    try:
+        processed_lead = process_lead_with_automation(test_lead)
         
         return jsonify({
             'success': True,
-            'data': mock_services[service_index]
-        }), 200
-        
+            'original_lead': test_lead,
+            'processed_lead': processed_lead,
+            'score': processed_lead.get('score'),
+            'priority': processed_lead.get('priority'),
+            'nurturing_sequence': processed_lead.get('nurturing_sequence'),
+            'message': 'Lead scoring testado com sucesso'
+        })
     except Exception as e:
-        logger.error(f"Update service error: {str(e)}")
         return jsonify({
             'success': False,
-            'message': 'Internal server error'
+            'error': f'Erro no teste: {str(e)}'
         }), 500
 
-@admin_bp.route('/admin/services/<int:service_id>', methods=['DELETE'])
-@require_auth
-def delete_service(service_id):
-    """Delete service"""
-    try:
-        # Find service
-        service_index = next((i for i, s in enumerate(mock_services) if s['id'] == service_id), None)
-        
-        if service_index is None:
-            return jsonify({
-                'success': False,
-                'message': 'Service not found'
-            }), 404
-        
-        # Remove service
-        deleted_service = mock_services.pop(service_index)
-        
-        logger.info(f"Service {service_id} deleted by: {request.current_user['email']}")
-        
-        return jsonify({
-            'success': True,
-            'message': 'Service deleted successfully'
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Delete service error: {str(e)}")
-        return jsonify({
-            'success': False,
-            'message': 'Internal server error'
-        }), 500
+@admin_bp.route('/automation/stats', methods=['GET'])
+def get_automation_stats():
+    """Obter estatísticas da automação"""
+    auth_error = require_auth()
+    if auth_error:
+        return auth_error
+    
+    # Simular estatísticas (em produção, vir da base de dados)
+    stats = {
+        'leads_processed_today': 4,
+        'average_score': 67,
+        'high_priority_leads': 2,
+        'urgent_leads': 1,
+        'emails_sent_today': 12,
+        'conversion_rate': 3.8,
+        'response_time_avg': 1.8,
+        'top_sources': [
+            {'source': 'Hero Form', 'count': 45, 'avg_score': 85},
+            {'source': 'Contact Form', 'count': 35, 'avg_score': 65},
+            {'source': 'Exit Popup', 'count': 20, 'avg_score': 78}
+        ],
+        'score_distribution': {
+            'urgent': 15,    # 100-150
+            'high': 35,      # 70-99
+            'medium': 40,    # 40-69
+            'low': 10        # 0-39
+        },
+        'hourly_performance': [
+            {'hour': 9, 'leads': 2, 'avg_score': 72},
+            {'hour': 10, 'leads': 3, 'avg_score': 68},
+            {'hour': 11, 'leads': 1, 'avg_score': 85},
+            {'hour': 14, 'leads': 4, 'avg_score': 78},
+            {'hour': 15, 'leads': 3, 'avg_score': 82},
+            {'hour': 16, 'leads': 2, 'avg_score': 75}
+        ]
+    }
+    
+    return jsonify({
+        'success': True,
+        'stats': stats,
+        'generated_at': datetime.now().isoformat()
+    })
 

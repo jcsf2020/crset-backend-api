@@ -100,52 +100,8 @@ class AdvancedAutomation:
         elif len(message) > 50:
             score += 5
             
-        return min(score, 150)  # Cap no score máximo
-        
-    def process_lead_with_automation(self, lead_data: Dict) -> Dict:
-        """
-        Processa lead com automação completa
-        """
-        try:
-            # Calcular score do lead
-            score = self.calculate_lead_score(lead_data)
-            
-            # Classificar lead
-            classification = self.classify_lead(score)
-            
-            # Preparar dados processados
-            processed_lead = {
-                **lead_data,
-                'score': score,
-                'classification': classification,
-                'processed_at': datetime.now().isoformat()
-            }
-            
-            logger.info(f"Lead processado: {processed_lead['name']} - Score: {score} - Classificação: {classification}")
-            
-            return {
-                'success': True,
-                'lead': processed_lead,
-                'actions_taken': ['scoring', 'classification']
-            }
-            
-        except Exception as e:
-            logger.error(f"Erro no processamento do lead: {str(e)}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
+        return min(score, 150)  # Máximo 150 pontos
     
-    def classify_lead(self, score: int) -> str:
-        """
-        Classifica lead baseado no score
-        """
-        if score >= 80:
-            return 'HOT'
-        elif score >= 50:
-            return 'WARM'
-        else:
-            return 'COLD'   
     def classify_lead_priority(self, score: int) -> str:
         """Classifica prioridade baseada no score"""
         if score >= 100:

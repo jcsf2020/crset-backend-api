@@ -8,7 +8,6 @@ import os
 import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from flask_compress import Compress
 from datetime import datetime
 import logging
 
@@ -19,8 +18,12 @@ logger = logging.getLogger(__name__)
 # Initialize Flask app
 app = Flask(__name__)
 
-# Enable compression
-Compress(app)
+# Enable compression (opcional, sem falhar)
+try:
+    from flask_compress import Compress
+    Compress(app)
+except Exception:
+    pass  # segue sem compressão se não estiver instalado
 
 # Configure CORS for production
 CORS(app, origins=[
@@ -28,6 +31,13 @@ CORS(app, origins=[
     "https://crsetsolutions.com",
     "https://go.crsetsolutions.com",
     "https://chat.crsetsolutions.com",
+    "https://ops.crsetsolutions.com"
+])
+
+# Health check endpoint (super-simples, sem dependências externas)
+@app.get("/health")
+def health():
+    return jsonify(status="ok"), 200
     "https://ops.crsetsolutions.com"
 ])
 
